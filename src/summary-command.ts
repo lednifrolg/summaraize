@@ -14,7 +14,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { DateFormat } from "./dates.ts";
-import { fetchChannelLog, TooManyMessagesError } from "./discord-fetch.ts";
+import { DEFAULT_CONTEXT, fetchChannelLog, TooManyMessagesError } from "./discord-fetch.ts";
 import { replyLanguage, type Texts, textsFor } from "./i18n.ts";
 import { linkCitations, sanitizeSummary, splitForDiscord } from "./output.ts";
 import { type Effort, SummaryError, summarize, type Tier } from "./summarize.ts";
@@ -125,6 +125,7 @@ export class SummaryCommand {
     const log = await fetchChannelLog(channel, {
       since,
       until,
+      context: DEFAULT_CONTEXT,
       minReactions: this.#config.minReactions,
       maxMessages: MAX_MESSAGES,
       timeZone,
@@ -146,6 +147,7 @@ export class SummaryCommand {
       channel: channel.id,
       days,
       messages: transcript.messageCount,
+      contextMessages: transcript.contextCount,
       language: summary.language,
       model: summary.model,
       inputTokens: summary.inputTokens,

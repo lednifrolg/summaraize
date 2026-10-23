@@ -24,8 +24,8 @@ export interface ReactionGroup {
 export interface ReplyTarget {
   messageId: string;
   /**
-   * Author and text of a target outside the window. Null for a target inside the window (the
-   * transcript points at it by number) and for a deleted or unavailable one.
+   * Author and text of a target older than everything fetched. Null for a fetched target (the
+   * transcript takes it from the period or the context) and for a deleted or unavailable one.
    */
   author: string | null;
   text: string | null;
@@ -61,6 +61,8 @@ export interface ThreadLog {
 export interface ChannelLog {
   id: string;
   name: string;
+  /** Messages before it are context: shown without a number and never summarized. */
+  periodStart: Date;
   messages: ChatMessage[];
   threads: ThreadLog[];
 }
@@ -72,15 +74,19 @@ export interface MessageRef {
 
 export interface Transcript {
   text: string;
-  /** `refs[n - 1]` is the message the transcript calls `#n`. */
+  /** `refs[n - 1]` is the message the transcript calls `#n`. Only period messages are numbered. */
   refs: MessageRef[];
+  /** Messages in the period, context excluded. */
   messageCount: number;
-  /** Distinct human authors, most active first. */
+  contextCount: number;
+  /** Distinct human authors in the period, most active first. */
   participants: string[];
   /** Every URL that appears in a message, the only links a summary may repeat. */
   urls: Set<string>;
 }
 
+const CONTEXT_START = "--- Earlier messages, context only: do not summarize, not citable ---";
+const PERIOD_START = "--- The period to summarize starts here ---";
 const REPLY_EXCERPT_LENGTH = 150;
 const EMBED_TEXT_LENGTH = 300;
 const NAME_LENGTH = 32;
@@ -153,8 +159,10 @@ function noteText(note: Note): string {
 
 export function buildTranscript(log: ChannelLog, timeZone: string): Transcript {
   const dates = new DateFormat(timeZone);
+  const isContext = (message: ChatMessage) => message.createdAt < log.periodStart;
   const refs: MessageRef[] = [];
   const localIds = new Map<string, number>();
+  const contextMessages = new Map<string, ChatMessage>();
   const authorsById = new Map<string, string>();
   const activity = new Map<string, number>();
   const urls = new Set<string>();
@@ -170,36 +178,38 @@ export function buildTranscript(log: ChannelLog, timeZone: string): Transcript {
   // Numbers are assigned up front so a thread header can point at its starter message.
   for (const section of sections) {
     for (const message of section.messages) {
-      refs.push({ channelId: section.channelId, messageId: message.id });
-      localIds.set(message.id, refs.length);
       authorsById.set(message.id, cleanName(message.author));
+      if (isContext(message)) {
+        contextMessages.set(message.id, message);
+      } else {
+        refs.push({ channelId: section.channelId, messageId: message.id });
+        localIds.set(message.id, refs.length);
+      }
     }
   }
   const threadNames = new Map(log.threads.map((thread) => [thread.id, thread.name]));
+  const reply = (target: ReplyTarget) =>
+    formatReply(target, localIds, authorsById, contextMessages);
 
   const lines: string[] = [];
-  for (const section of sections) {
-    if (section.thread) {
-      const starter = localIds.get(section.thread.id);
-      const origin = starter ? ` (started from #${starter})` : "";
-      lines.push("", `=== Thread ${quote(section.thread.name)}${origin} ===`);
-    }
+  const pushMessages = (messages: ChatMessage[]) => {
     let currentDay = "";
-    for (const message of section.messages) {
+    for (const message of messages) {
       const day = dates.day(message.createdAt);
       if (day !== currentDay) {
         lines.push(`=== ${day} ===`);
         currentDay = day;
       }
       const author = cleanName(message.author);
-      if (!message.isBot) activity.set(author, (activity.get(author) ?? 0) + 1);
+      const local = localIds.get(message.id);
+      if (local && !message.isBot) activity.set(author, (activity.get(author) ?? 0) + 1);
       for (const text of [message.text, ...message.notes.map(noteText)]) {
         for (const url of extractUrls(text)) urls.add(url);
       }
 
-      let head = `[${dates.time(message.createdAt)}] #${localIds.get(message.id)} ${author}`;
+      let head = `[${dates.time(message.createdAt)}]${local ? ` #${local}` : ""} ${author}`;
       if (message.isBot) head += " (bot)";
-      if (message.replyTo) head += ` (${formatReply(message.replyTo, localIds, authorsById)})`;
+      if (message.replyTo) head += ` (${reply(message.replyTo)})`;
 
       const parts = [`${head}:`];
       if (message.text) parts.push(quote(message.text));
@@ -217,12 +227,32 @@ export function buildTranscript(log: ChannelLog, timeZone: string): Transcript {
         lines.push(`  [reactions: ${groups.join("; ")}]`);
       }
     }
+  };
+
+  for (const section of sections) {
+    if (section.thread) {
+      const starter = localIds.get(section.thread.id);
+      const origin = starter
+        ? ` (started from #${starter})`
+        : contextMessages.has(section.thread.id)
+          ? " (started before the period)"
+          : "";
+      lines.push("", `=== Thread ${quote(section.thread.name)}${origin} ===`);
+    }
+    const context = section.messages.filter(isContext);
+    if (context.length > 0) {
+      lines.push(CONTEXT_START);
+      pushMessages(context);
+      lines.push(PERIOD_START);
+    }
+    pushMessages(section.messages.filter((message) => !isContext(message)));
   }
 
   return {
     text: lines.join("\n"),
     refs,
     messageCount: refs.length,
+    contextCount: contextMessages.size,
     participants: [...activity.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name),
     urls,
   };
@@ -232,9 +262,13 @@ function formatReply(
   reply: ReplyTarget,
   localIds: Map<string, number>,
   authorsById: Map<string, string>,
+  contextMessages: Map<string, ChatMessage>,
 ): string {
   const local = localIds.get(reply.messageId);
   if (local) return `reply to #${local} ${authorsById.get(reply.messageId)}`;
-  if (reply.author === null || reply.text === null) return "reply to a deleted message";
-  return `reply to ${cleanName(reply.author)}: ${quote(excerpt(reply.text, REPLY_EXCERPT_LENGTH))}`;
+  const earlier = contextMessages.get(reply.messageId);
+  const author = earlier?.author ?? reply.author;
+  const text = earlier?.text ?? reply.text;
+  if (author === null || text === null) return "reply to a deleted message";
+  return `reply to ${cleanName(author)}: ${quote(excerpt(text, REPLY_EXCERPT_LENGTH))}`;
 }

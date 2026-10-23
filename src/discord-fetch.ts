@@ -1,4 +1,5 @@
-// Collects a channel window from Discord into the plain data the transcript is built from.
+// Collects a channel window from Discord into the plain data the transcript is built from: the
+// period to summarize, plus a few days before it as context for what the period refers to.
 //
 // Copyright (C) 2026 Filip Tomasovych
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -27,13 +28,25 @@ import type {
   ThreadLog,
 } from "./transcript.ts";
 
+export interface ContextOptions {
+  /** How far before the period context reaches. */
+  days: number;
+  /** Per channel or thread; the messages nearest to the period are kept. */
+  maxMessages: number;
+}
+
+/** Enough to explain replies and ongoing topics without multiplying the cost of a short period. */
+export const DEFAULT_CONTEXT: ContextOptions = { days: 3, maxMessages: 300 };
+
 export interface FetchOptions {
+  /** Start of the period to summarize. */
   since: Date;
-  /** End of the window; now when omitted. */
+  /** End of the period; now when omitted. */
   until?: Date;
+  context: ContextOptions;
   /** Distinct reactors a message needs before its reactions are included. */
   minReactions: number;
-  /** Upper bound on fetched messages across the channel and its threads. */
+  /** Upper bound on messages in the period across the channel and its threads. */
   maxMessages: number;
   timeZone: string;
 }
@@ -48,6 +61,7 @@ export class TooManyMessagesError extends Error {
 }
 
 const PAGE_SIZE = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Everything else is a system message (joins, pins, thread created, ...).
 const CONVERSATION_TYPES = new Set([
@@ -68,7 +82,7 @@ export async function fetchChannelLog(
   if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement) {
     for (const thread of await threadsActiveSince(channel, options.since)) {
       const threadMessages = await fetcher.messages(thread).catch(skipMissingAccess);
-      if (threadMessages.length > 0) {
+      if (threadMessages.some((message) => message.createdAt >= options.since)) {
         threads.push({ id: thread.id, name: thread.name, messages: threadMessages });
       }
     }
@@ -78,7 +92,7 @@ export async function fetchChannelLog(
     );
   }
 
-  return { id: channel.id, name: channel.name, messages, threads };
+  return { id: channel.id, name: channel.name, periodStart: options.since, messages, threads };
 }
 
 // A private or restricted thread the bot cannot read is left out rather than failing the summary.
@@ -137,28 +151,35 @@ class WindowFetcher {
 
   async messages(channel: GuildTextBasedChannel): Promise<ChatMessage[]> {
     const ownId = this.#guild.client.user.id;
-    const raw = (await this.#fetchSince(channel)).filter(
+    const raw = (await this.#fetchWindow(channel)).filter(
       (message) => CONVERSATION_TYPES.has(message.type) && message.author.id !== ownId,
     );
-    const inWindow = new Set(raw.map((message) => message.id));
+    const fetched = new Set(raw.map((message) => message.id));
     const converted: ChatMessage[] = [];
-    for (const message of raw) converted.push(await this.#convert(message, inWindow));
+    for (const message of raw) converted.push(await this.#convert(message, fetched));
     return converted;
   }
 
-  /** Oldest first. */
-  async #fetchSince(channel: GuildTextBasedChannel): Promise<Message<true>[]> {
+  /** The period and the context before it, oldest first. */
+  async #fetchWindow(channel: GuildTextBasedChannel): Promise<Message<true>[]> {
     const since = this.#options.since.getTime();
-    const { until } = this.#options;
+    const { until, context } = this.#options;
+    const contextSince = since - context.days * DAY_MS;
     const newestFirst: Message<true>[] = [];
+    let contextCount = 0;
     let before = until ? SnowflakeUtil.generate({ timestamp: until }).toString() : undefined;
     for (;;) {
       const page = await channel.messages.fetch({ limit: PAGE_SIZE, before, cache: false });
       for (const message of page.values()) {
-        if (message.createdTimestamp < since) return newestFirst.reverse();
-        this.#fetched += 1;
-        if (this.#fetched > this.#options.maxMessages) {
-          throw new TooManyMessagesError(this.#options.maxMessages);
+        if (message.createdTimestamp >= since) {
+          this.#fetched += 1;
+          if (this.#fetched > this.#options.maxMessages) {
+            throw new TooManyMessagesError(this.#options.maxMessages);
+          }
+        } else if (message.createdTimestamp < contextSince || contextCount >= context.maxMessages) {
+          return newestFirst.reverse();
+        } else {
+          contextCount += 1;
         }
         newestFirst.push(message);
       }
@@ -167,7 +188,7 @@ class WindowFetcher {
     }
   }
 
-  async #convert(message: Message<true>, inWindow: Set<string>): Promise<ChatMessage> {
+  async #convert(message: Message<true>, fetched: Set<string>): Promise<ChatMessage> {
     const notes: Note[] = [];
     for (const attachment of message.attachments.values()) {
       notes.push({
@@ -213,7 +234,7 @@ class WindowFetcher {
     let replyTo: ReplyTarget | null = null;
     const targetId = message.reference?.messageId;
     if (message.type === MessageType.Reply && targetId) {
-      replyTo = inWindow.has(targetId)
+      replyTo = fetched.has(targetId)
         ? { messageId: targetId, author: null, text: null }
         : await this.#replyTarget(message, targetId);
     }
@@ -226,7 +247,8 @@ class WindowFetcher {
       text: await this.#text(message.content, message.mentions),
       notes,
       replyTo,
-      reactions: await this.#reactions(message),
+      // Context is never summarized, so its reactors are not worth the extra requests.
+      reactions: message.createdAt >= this.#options.since ? await this.#reactions(message) : [],
     };
   }
 

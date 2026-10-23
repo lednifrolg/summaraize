@@ -26,8 +26,12 @@ function message(overrides: Partial<ChatMessage> & Pick<ChatMessage, "id">): Cha
   };
 }
 
-function channel(messages: ChatMessage[], threads: ChannelLog["threads"] = []): ChannelLog {
-  return { id: "c1", name: "cs2", messages, threads };
+function channel(
+  messages: ChatMessage[],
+  threads: ChannelLog["threads"] = [],
+  periodStart = new Date(0),
+): ChannelLog {
+  return { id: "c1", name: "cs2", periodStart, messages, threads };
 }
 
 // The complete line grammar of a transcript. Any user text that escaped its JSON string or got
@@ -43,8 +47,10 @@ const LINE = new RegExp(
   [
     "",
     String.raw`=== (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d\d\.\d\d\.\d{4} ===`,
-    String.raw`=== Thread ${STRING}(?: \(started from #\d+\))? ===`,
-    String.raw`\[\d\d:\d\d\] #\d+ ${NAME}(?: \(bot\))?(?:${REPLY})?:(?: ${STRING})?(?: ${NOTE})*`,
+    String.raw`=== Thread ${STRING}(?: \((?:started from #\d+|started before the period)\))? ===`,
+    "--- Earlier messages, context only: do not summarize, not citable ---",
+    "--- The period to summarize starts here ---",
+    String.raw`\[\d\d:\d\d\](?: #\d+)? ${NAME}(?: \(bot\))?(?:${REPLY})?:(?: ${STRING})?(?: ${NOTE})*`,
     String.raw`  \[reactions: ${REACTION}(?:; ${REACTION})*\]`,
   ]
     .map((alternative) => `^${alternative}$`)
@@ -235,6 +241,77 @@ describe("buildTranscript", () => {
       const content = line.slice(line.indexOf('): "') + 3).match(new RegExp(`^${STRING}`))?.[0];
       assert.equal(JSON.parse(content ?? "null"), text);
     });
+  });
+});
+
+describe("buildTranscript context", () => {
+  const periodStart = new Date("2026-10-20T00:00:00Z");
+  const earlier = (id: string, text: string, author = "Eva") =>
+    message({ id, author, text, createdAt: new Date("2026-10-18T18:00:00Z") });
+
+  test("shows earlier messages unnumbered before a marker and numbers only the period", () => {
+    const transcript = buildTranscript(
+      channel(
+        [
+          earlier("c1", "kto zarezervuje server na sobotu?"),
+          message({
+            id: "m1",
+            text: "ja to vybavím",
+            replyTo: { messageId: "c1", author: null, text: null },
+          }),
+        ],
+        [],
+        periodStart,
+      ),
+      TZ,
+    );
+
+    assert.equal(
+      transcript.text,
+      [
+        "--- Earlier messages, context only: do not summarize, not citable ---",
+        "=== Sun 18.10.2026 ===",
+        '[20:00] Eva: "kto zarezervuje server na sobotu?"',
+        "--- The period to summarize starts here ---",
+        "=== Tue 20.10.2026 ===",
+        '[14:03] #1 Jano (reply to Eva: "kto zarezervuje server na sobotu?"): "ja to vybavím"',
+      ].join("\n"),
+    );
+    assertGrammar(transcript.text);
+    assert.deepEqual(transcript.refs, [{ channelId: "c1", messageId: "m1" }]);
+    assert.equal(transcript.messageCount, 1);
+    assert.equal(transcript.contextCount, 1);
+    assert.deepEqual(transcript.participants, ["Jano"]);
+  });
+
+  test("threads get their own context block and know when they started before the period", () => {
+    const transcript = buildTranscript(
+      channel(
+        [earlier("c1", "nová mapa"), message({ id: "m1", text: "a" })],
+        [
+          {
+            id: "c1",
+            name: "Mapa",
+            messages: [earlier("t0", "prvý dojem"), message({ id: "t1", text: "dobrá" })],
+          },
+        ],
+        periodStart,
+      ),
+      TZ,
+    );
+    const lines = transcript.text.split("\n");
+    assertGrammar(transcript.text);
+    assert.ok(lines.includes('=== Thread "Mapa" (started before the period) ==='));
+    assert.equal(lines.filter((line) => line.startsWith("--- Earlier messages")).length, 2);
+    assert.ok(lines.includes('[20:00] Eva: "prvý dojem"'));
+    assert.ok(lines.includes('[14:03] #2 Jano: "dobrá"'));
+    assert.ok(lines.includes('[20:00] Eva: "nová mapa" [thread "Mapa"]'));
+  });
+
+  test("leaves out the markers when nothing came before the period", () => {
+    const transcript = buildTranscript(channel([message({ id: "m1", text: "a" })]), TZ);
+    assert.ok(!transcript.text.includes("---"));
+    assert.equal(transcript.contextCount, 0);
   });
 });
 

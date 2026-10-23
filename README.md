@@ -10,6 +10,9 @@ Summaries are written by Claude through the Anthropic API.
 ## What goes into a summary
 
 - Messages of the channel, plus threads started under it.
+- Up to 3 days of earlier messages (at most 300 per channel or thread) as context, so replies to
+  older questions and ongoing topics make sense. The summary itself covers only the requested
+  days and never cites the context.
 - Who replied to whom.
 - Reactions, only on messages at least 3 different people reacted to, with who reacted how.
 - Attachments, stickers, polls with their votes, forwarded messages and bot embeds.
@@ -85,7 +88,7 @@ npm run summarize -- --channel <channel id> --days 14 --until 2025-06-30 --tier 
 ```
 
 Options: `--tier cheap|better|both` (Haiku, Sonnet), `--effort low|medium|high`,
-`--language auto|sk|...`, `--min-reactions 3`, `--until <date>` to end the window in the past. Copy a
+`--language auto|sk|...`, `--min-reactions 3`, `--until <date>` to end the window in the past, `--context-days 3` (0 for none). Copy a
 channel ID with Developer Mode on (User Settings, Advanced) and right-click the channel.
 
 | Path                                | Contents                                                        |

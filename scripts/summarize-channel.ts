@@ -3,9 +3,11 @@
 // model tiers and effort levels on real channels.
 //
 //   npm run summarize -- --channel <id> --days 7 [--until 2025-06-30] [--tier cheap|better|both]
-//                        [--effort low|medium|high] [--language auto|sk|...] [--min-reactions 3] [--dry-run]
+//                        [--effort low|medium|high] [--language auto|sk|...] [--min-reactions 3]
+//                        [--context-days 3] [--dry-run]
 //
 // --until ends the window at a past date instead of now, for channels that went quiet.
+// --context-days 0 sends the period alone, without earlier messages as context.
 // --dry-run stops after the transcript, without calling Claude.
 //
 // Copyright (C) 2026 Filip Tomasovych
@@ -16,7 +18,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { Client, Events, GatewayIntentBits } from "discord.js";
 import { DateFormat } from "../src/dates.ts";
-import { fetchChannelLog } from "../src/discord-fetch.ts";
+import { DEFAULT_CONTEXT, fetchChannelLog } from "../src/discord-fetch.ts";
 import { parseLanguageSetting } from "../src/language.ts";
 import { sanitizeSummary } from "../src/output.ts";
 import { type Effort, MODELS, summarize, type Tier } from "../src/summarize.ts";
@@ -35,6 +37,7 @@ const { values: args } = parseArgs({
     effort: { type: "string", default: "medium" },
     language: { type: "string", default: "auto" },
     "min-reactions": { type: "string", default: "3" },
+    "context-days": { type: "string", default: String(DEFAULT_CONTEXT.days) },
     "dry-run": { type: "boolean", default: false },
   },
 });
@@ -46,6 +49,7 @@ function fail(message: string): never {
 
 const days = Number(args.days);
 const minReactions = Number(args["min-reactions"]);
+const contextDays = Number(args["context-days"]);
 const tiers: Tier[] =
   args.tier === "both" ? ["cheap", "better"] : args.tier === "cheap" ? ["cheap"] : ["better"];
 if (!args.channel) fail("--channel <id> is required");
@@ -55,6 +59,7 @@ if (Number.isNaN(until.getTime())) fail("--until must be a date such as 2025-06-
 if (!["both", "cheap", "better"].includes(args.tier)) fail("--tier must be cheap, better or both");
 if (!["low", "medium", "high"].includes(args.effort)) fail("--effort must be low, medium or high");
 if (!Number.isInteger(minReactions) || minReactions < 1) fail("--min-reactions must be >= 1");
+if (!Number.isInteger(contextDays) || contextDays < 0) fail("--context-days must be >= 0");
 const language = (() => {
   try {
     return parseLanguageSetting(args.language);
@@ -82,6 +87,7 @@ try {
   const log = await fetchChannelLog(channel, {
     since,
     until,
+    context: { ...DEFAULT_CONTEXT, days: contextDays },
     minReactions,
     maxMessages: MAX_MESSAGES,
     timeZone,
@@ -94,7 +100,8 @@ try {
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(`${stem}-transcript.txt`, `${transcript.text}\n`);
   console.log(
-    `#${channel.name}: ${transcript.messageCount} messages, ${log.threads.length} threads, ` +
+    `#${channel.name}: ${transcript.messageCount} messages + ${transcript.contextCount} context, ` +
+      `${log.threads.length} threads, ` +
       `${transcript.participants.length} people, ${transcript.text.length} chars, ` +
       `fetched in ${fetchSeconds.toFixed(1)} s -> ${stem}-transcript.txt`,
   );
