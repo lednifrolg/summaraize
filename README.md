@@ -55,12 +55,12 @@ cp .env.example .env   # fill in DISCORD_TOKEN and ANTHROPIC_API_KEY
 npm start
 ```
 
-| Variable            | Meaning                                              | Default             |
-| ------------------- | ---------------------------------------------------- | ------------------- |
-| `DISCORD_TOKEN`     | Bot token from the Developer Portal                  | required            |
-| `ANTHROPIC_API_KEY` | Pays for the summaries of every server the bot is in | required            |
-| `TIMEZONE`          | IANA timezone for days and times in summaries        | `Europe/Bratislava` |
-| `SUMMARY_LANGUAGE`  | Language of summaries and replies, `sk` or `en`      | `sk`                |
+| Variable            | Meaning                                                                   | Default             |
+| ------------------- | ------------------------------------------------------------------------- | ------------------- |
+| `DISCORD_TOKEN`     | Bot token from the Developer Portal                                       | required            |
+| `ANTHROPIC_API_KEY` | Pays for the summaries of every server the bot is in                      | required            |
+| `TIMEZONE`          | IANA timezone for days and times in summaries                             | `Europe/Bratislava` |
+| `SUMMARY_LANGUAGE`  | `auto` (language most messages are in) or a code such as `sk`, `cs`, `en` | `auto`              |
 
 The bot registers `/summary` on start. It answers only while the process runs; if the command
 does not show up right away, reload the Discord client (Ctrl+R).
@@ -85,7 +85,7 @@ npm run summarize -- --channel <channel id> --days 14 --until 2025-06-30 --tier 
 ```
 
 Options: `--tier cheap|better|both` (Haiku, Sonnet), `--effort low|medium|high`,
-`--language sk`, `--min-reactions 3`, `--until <date>` to end the window in the past. Copy a
+`--language auto|sk|...`, `--min-reactions 3`, `--until <date>` to end the window in the past. Copy a
 channel ID with Developer Mode on (User Settings, Advanced) and right-click the channel.
 
 | Path                                | Contents                                                        |

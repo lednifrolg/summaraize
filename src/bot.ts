@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { Client, Events, GatewayIntentBits } from "discord.js";
+import { AUTO, parseLanguageSetting } from "./language.ts";
 import { SummaryCommand, summaryCommand } from "./summary-command.ts";
 
 function required(name: string): string {
@@ -16,10 +17,23 @@ function required(name: string): string {
   return value;
 }
 
+function languageSetting(): string {
+  const value = process.env.SUMMARY_LANGUAGE || AUTO;
+  try {
+    return parseLanguageSetting(value);
+  } catch {
+    console.error(
+      `SUMMARY_LANGUAGE must be "auto" or a language code such as "sk", not "${value}"`,
+    );
+    process.exit(1);
+  }
+}
+
 const token = required("DISCORD_TOKEN");
+const language = languageSetting();
 const summary = new SummaryCommand({
   apiKey: required("ANTHROPIC_API_KEY"),
-  language: process.env.SUMMARY_LANGUAGE || "sk",
+  language,
   timeZone: process.env.TIMEZONE || "Europe/Bratislava",
   tier: "better",
   effort: "medium",
@@ -31,7 +45,9 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once(Events.ClientReady, async (ready) => {
   // Overwrites the global command list, so a renamed or removed command disappears too.
   await ready.application.commands.set([summaryCommand.toJSON()]);
-  console.log(`Logged in as ${ready.user.tag} in ${ready.guilds.cache.size} servers`);
+  console.log(
+    `Logged in as ${ready.user.tag} in ${ready.guilds.cache.size} servers, summary language: ${language}`,
+  );
 });
 
 client.on(Events.InteractionCreate, (interaction) => {

@@ -4,6 +4,8 @@
 // Copyright (C) 2026 Filip Tomasovych
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { AUTO, primaryLanguage } from "./language.ts";
+
 export interface Texts {
   header(days: number, messages: number, people: number): string;
   noMessages(days: number): string;
@@ -46,6 +48,29 @@ const slovak: Texts = {
   notHere: "Sumár funguje iba v textových channeloch a vláknach na serveri.",
 };
 
+const czechPeriod = (days: number) =>
+  days === 1
+    ? "poslední den"
+    : plural("cs", days, { few: `poslední ${days} dny`, other: `posledních ${days} dní` });
+
+const czech: Texts = {
+  header: (days, messages, people) =>
+    `📋 **Souhrn za ${czechPeriod(days)}** · ${messages} ${plural("cs", messages, {
+      one: "zpráva",
+      few: "zprávy",
+      other: "zpráv",
+    })} · ${people} ${plural("cs", people, { one: "člověk", few: "lidé", other: "lidí" })}`,
+  noMessages: (days) => `Za ${czechPeriod(days)} tu nejsou žádné zprávy.`,
+  tooManyMessages: "V tomto období je na jeden souhrn příliš mnoho zpráv. Zkus méně dní.",
+  busy: "V tomto kanálu se už souhrn připravuje, chvíli počkej.",
+  cooldown: (seconds) => `Další souhrn tu můžeš spustit za ${seconds} s.`,
+  refused: "Claude tento souhrn odmítl vytvořit. Zkus jiné období.",
+  invalidKey: "API klíč pro Claude je neplatný. Admin serveru ho musí nastavit znovu.",
+  aiUnavailable: "Claude je momentálně přetížený nebo nedostupný. Zkus to za chvíli.",
+  failed: "Souhrn se nepodařilo vytvořit. Zkus to znovu později.",
+  notHere: "Souhrn funguje jen v textových kanálech a vláknech na serveru.",
+};
+
 const englishPeriod = (days: number) => (days === 1 ? "the last day" : `the last ${days} days`);
 
 const english: Texts = {
@@ -65,6 +90,22 @@ const english: Texts = {
   notHere: "Summaries work only in server text channels and threads.",
 };
 
+const TEXTS: Record<string, Texts> = { sk: slovak, cs: czech, en: english };
+
 export function textsFor(language: string): Texts {
-  return language === "sk" ? slovak : english;
+  return TEXTS[primaryLanguage(language) ?? ""] ?? english;
+}
+
+/**
+ * Language of replies sent before a summary exists, such as cooldown or error messages. With
+ * `auto`, the language last detected in the channel wins, then the Discord language of the
+ * member who ran the command.
+ */
+export function replyLanguage(
+  setting: string,
+  detectedInChannel: string | undefined,
+  memberLocale: string,
+): string {
+  if (setting !== AUTO) return setting;
+  return detectedInChannel ?? memberLocale;
 }

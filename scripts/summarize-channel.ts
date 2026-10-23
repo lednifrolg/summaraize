@@ -3,7 +3,7 @@
 // model tiers and effort levels on real channels.
 //
 //   npm run summarize -- --channel <id> --days 7 [--until 2025-06-30] [--tier cheap|better|both]
-//                        [--effort low|medium|high] [--language sk] [--min-reactions 3] [--dry-run]
+//                        [--effort low|medium|high] [--language auto|sk|...] [--min-reactions 3] [--dry-run]
 //
 // --until ends the window at a past date instead of now, for channels that went quiet.
 // --dry-run stops after the transcript, without calling Claude.
@@ -17,6 +17,7 @@ import { parseArgs } from "node:util";
 import { Client, Events, GatewayIntentBits } from "discord.js";
 import { DateFormat } from "../src/dates.ts";
 import { fetchChannelLog } from "../src/discord-fetch.ts";
+import { parseLanguageSetting } from "../src/language.ts";
 import { sanitizeSummary } from "../src/output.ts";
 import { type Effort, MODELS, summarize, type Tier } from "../src/summarize.ts";
 import { buildTranscript } from "../src/transcript.ts";
@@ -32,7 +33,7 @@ const { values: args } = parseArgs({
     until: { type: "string" },
     tier: { type: "string", default: "both" },
     effort: { type: "string", default: "medium" },
-    language: { type: "string", default: "sk" },
+    language: { type: "string", default: "auto" },
     "min-reactions": { type: "string", default: "3" },
     "dry-run": { type: "boolean", default: false },
   },
@@ -54,6 +55,13 @@ if (Number.isNaN(until.getTime())) fail("--until must be a date such as 2025-06-
 if (!["both", "cheap", "better"].includes(args.tier)) fail("--tier must be cheap, better or both");
 if (!["low", "medium", "high"].includes(args.effort)) fail("--effort must be low, medium or high");
 if (!Number.isInteger(minReactions) || minReactions < 1) fail("--min-reactions must be >= 1");
+const language = (() => {
+  try {
+    return parseLanguageSetting(args.language);
+  } catch {
+    return fail('--language must be "auto" or a language code such as "sk"');
+  }
+})();
 
 const discordToken = process.env.DISCORD_TOKEN || fail("DISCORD_TOKEN is missing in .env");
 const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
@@ -100,7 +108,7 @@ try {
       apiKey,
       tier,
       effort: args.effort as Effort,
-      language: args.language,
+      language,
       timeZone,
       minReactions,
       channelName: channel.name,
@@ -113,7 +121,8 @@ try {
     const file = `${stem}-${tier}-${args.effort}.md`;
     await writeFile(file, `${text}\n`);
     console.log(
-      `\n===== ${MODELS[tier]} (served by ${summary.model}), effort ${args.effort}: ` +
+      `\n===== ${MODELS[tier]} (served by ${summary.model}), effort ${args.effort}, ` +
+        `language ${language} -> ${summary.language}: ` +
         `${summary.inputTokens} in / ${summary.outputTokens} out tokens, ` +
         `~$${summary.costUsd.toFixed(4)}, ${seconds.toFixed(1)} s -> ${file}\n\n${text}`,
     );

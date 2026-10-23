@@ -15,7 +15,7 @@ import {
 } from "discord.js";
 import { DateFormat } from "./dates.ts";
 import { fetchChannelLog, TooManyMessagesError } from "./discord-fetch.ts";
-import { type Texts, textsFor } from "./i18n.ts";
+import { replyLanguage, type Texts, textsFor } from "./i18n.ts";
 import { linkCitations, sanitizeSummary, splitForDiscord } from "./output.ts";
 import { type Effort, SummaryError, summarize, type Tier } from "./summarize.ts";
 import { buildTranscript } from "./transcript.ts";
@@ -58,13 +58,21 @@ export class SummaryCommand {
   #config: SummaryConfig;
   #running = new Set<string>();
   #lastStart = new Map<string, number>();
+  /** Language of the last summary per channel, for replies that come before the next one. */
+  #lastLanguage = new Map<string, string>();
 
   constructor(config: SummaryConfig) {
     this.#config = config;
   }
 
   async handle(interaction: ChatInputCommandInteraction): Promise<void> {
-    const texts = textsFor(this.#config.language);
+    const texts = textsFor(
+      replyLanguage(
+        this.#config.language,
+        this.#lastLanguage.get(interaction.channelId),
+        interaction.locale,
+      ),
+    );
     const channel = interaction.inCachedGuild()
       ? (interaction.channel ?? (await interaction.guild.channels.fetch(interaction.channelId)))
       : null;
@@ -90,7 +98,7 @@ export class SummaryCommand {
     try {
       await interaction.deferReply();
       const days = interaction.options.getInteger("days", true);
-      const summary = await this.#summary(channel, days, texts);
+      const summary = await this.#summary(channel, days);
       if (summary === null) {
         await interaction.editReply({ content: texts.noMessages(days), allowedMentions: NO_PINGS });
         return;
@@ -109,11 +117,7 @@ export class SummaryCommand {
   }
 
   /** Header and summary text, or null when the window has no messages. */
-  async #summary(
-    channel: GuildTextBasedChannel,
-    days: number,
-    texts: Texts,
-  ): Promise<string | null> {
+  async #summary(channel: GuildTextBasedChannel, days: number): Promise<string | null> {
     const { timeZone } = this.#config;
     const started = performance.now();
     const until = new Date();
@@ -142,6 +146,7 @@ export class SummaryCommand {
       channel: channel.id,
       days,
       messages: transcript.messageCount,
+      language: summary.language,
       model: summary.model,
       inputTokens: summary.inputTokens,
       outputTokens: summary.outputTokens,
@@ -154,7 +159,12 @@ export class SummaryCommand {
       transcript.refs,
       channel.guildId,
     );
-    const header = texts.header(days, transcript.messageCount, transcript.participants.length);
+    this.#lastLanguage.set(channel.id, summary.language);
+    const header = textsFor(summary.language).header(
+      days,
+      transcript.messageCount,
+      transcript.participants.length,
+    );
     return `${header}\n\n${body}`;
   }
 }
